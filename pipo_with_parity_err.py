@@ -3,15 +3,18 @@ import matplotlib.pyplot as plt
 from scipy.integrate import odeint
 
 # ==================== CONFIGURATION ====================
-ERR_BIT3_50_150 = True  # Enable/disable error injection on bit 3 between t=50-150
-
+FLIP_BIT1_0_85 = True  # Enable/disable error injection on bit 1 between t=0-85
+FLIP_BIT3_25_125 = True  # Enable/disable error injection on bit 3 between t=25-125
+FLIP_STORED_PARITY_VAL = True  # Enable/disable forcing stored parity to 0 between t=400-450
 # ==================== PROJECT OVERVIEW ====================
 # This module implements a 4-bit PIPO (Parallel In, Parallel Out) register
 # using biological D flip-flops. The key feature is PARITY CHECKING support
 # for improving reliability in biological systems.
 # 
 # Architecture:
-#   - 4 D flip-flops, each capable of storing one bit
+#   - 4 D flip-flops for data storage (bit 0-3)
+#   - 1 D flip-flop for parity bit (5 bits total)
+#   - 2 D flip-flops for expected values (q1_expected, q3_expected) - visualization references
 #   - Parallel input/output: all 4 bits can be read/written simultaneously
 #   - Write control signals: WRITE_ALL (load all bits) and WRITE_i (load individual bits)
 #   - Clock-driven state updates following biological reaction kinetics
@@ -22,11 +25,19 @@ ERR_BIT3_50_150 = True  # Enable/disable error injection on bit 3 between t=50-1
 #   - ODE system models continuous biochemical state (protein concentrations)
 #   - Digital readout: (Q > not_Q) indicates logical state
 #
-# Future Extension (Parity Checking):
-#   - For 4 data bits, add 1 parity bit (5 bits total storage)
+# Parity Checking (Implemented):
+#   - For 4 data bits, stores 1 even parity bit (5 bits total storage)
 #   - Parity generator: XOR cascade of the 4 data bits
 #   - Parity checker: Compare stored parity with recalculated parity
-#   - Enables error detection and improved memory reliability assessment
+#   - Enables error detection for single-bit errors
+#
+# Error Injection & Visualization:
+#   - Bit 1 (q1) can receive error injection - forced HIGH t=0-100
+#   - Bit 1 expected value (q1_expected) tracks what bit 1 should be without error
+#   - Bit 3 (q3) can receive error injection - forced HIGH t=25-125, recovery t=125-300
+#   - Bit 3 expected value (q3_expected) tracks what bit 3 should be without error
+#   - Expected values are used for parity calculation and visualization comparison
+#   - This allows visualizing the difference between actual and expected values
 
 # ==================== HILL FUNCTIONS ====================
 def get_clock(t, amp=100, per=24, phase=0):
@@ -171,23 +182,28 @@ def ff_ode_model(Y, T, params):
 # ==================== PIPO REGISTER CLASS ====================
 class PIPORegister:
     """
-    4-bit Parallel In Parallel Out (PIPO) Register with selective write controls.
+    4-bit PIPO Register with Parity Checking and Error Injection Capability.
     
     REGISTER FUNCTION:
-        - Stores 4 bits of data in parallel
+        - Stores 4 data bits (bit 0-3) + 1 parity bit
+        - Tracks expected values (q1_expected, q3_expected) for visualization and parity
         - All bits can be written simultaneously (WRITE_ALL) or individually (WRITE_i)
         - All bits can be read simultaneously from Q outputs
         - Clock-synchronized operation ensures reliable state capture
+        - Error injection on bit 1 (q1) and bit 3 (q3) for testing parity detection
     
     WRITE MODES:
         1. WRITE_ALL: Load all 4 bits simultaneously during specified time windows
         2. WRITE_i: Load specific bit 'i' only, during its designated window
-        3. HOLD: When no write signal, output Q feeds back to input D (retains value)
+        3. WRITE_1ERR, WRITE_3ERR: Error injection signals (when enabled)
+        4. HOLD: When no write signal, output Q feeds back to input D (retains value)
     
     ARCHITECTURE:
-        - 4 D flip-flops arranged in parallel
+        - 4 D flip-flops for data bits (bit 0-3)
+        - 1 D flip-flop for parity bit
+        - 2 D flip-flops for expected values (q1_expected, q3_expected) - visualization only
         - Each flip-flop: [a, not_a, q, not_q] (4 ODEs per bit)
-        - Total state vector: 16 variables
+        - Total state vector: 28 variables (7 flip-flops × 4 states)
         - Multiplexer logic: selects D_input or Q_feedback based on write enables
     
     KEY ATTRIBUTES:
@@ -241,11 +257,13 @@ class PIPORegister:
         
         WRITE_ALL windows: All 4 bits are written together
         WRITE_i windows: Only bit 'i' is written (others hold their value)
+        WRITE_PARITY: Force write to parity bit (for error injection)
         
         Returns:
-            (write_all, write_bits)
+            (write_all, write_bits, write_parity)
             - write_all: bool - True if in WRITE_ALL window
             - write_bits: list of 4 bools - True if each bit should be written
+            - write_parity: bool - True if parity should be force-written
         """
         # WRITE_ALL windows - simultaneous load of all 4 bits
         # These are 'test' or 'initialization' periods
@@ -255,12 +273,12 @@ class PIPORegister:
         # WRITE_i windows - selective individual bit loading
         # Allows testing of specific bits in isolation
         write_bit_windows = {
-            1: [(150, 250)],  # Write bit 1 during this window
+            1: [(150, 250)],  # Write bit 1 during this window 
         }
-        
+
         # Conditionally add WRITE_3 error injection window
-        if ERR_BIT3_50_150:
-            write_bit_windows[3] = [(50, 100)]  # WRITE_3ERR: Error injection on bit 3
+        if FLIP_BIT3_25_125:
+            write_bit_windows[3] = [(25, 125)]  # WRITE_3ERR: Error injection on bit 3
         
         write_bits = [False] * 4
         for i in range(4):
@@ -268,7 +286,12 @@ class PIPORegister:
                 write_bits[i] = any(start <= T < end 
                                    for start, end in write_bit_windows[i])
         
-        return write_all, write_bits
+        # WRITE_PARITY window - force parity to specific value (error injection)
+        write_parity = False
+        if FLIP_STORED_PARITY_VAL:
+            write_parity = (400 <= T < 450) or (450 <= T < 500)
+        
+        return write_all, write_bits, write_parity
     
     def _default_parallel_input(self, T):
         """
@@ -308,14 +331,17 @@ class PIPORegister:
         """
         PIPO Register ODE Model - Main Simulation Kernel.
         
-        This method defines the complete state evolution for all 4 flip-flops.
+        This method defines the complete state evolution for all 7 flip-flops.
         Called by the ODE solver at each time step.
         
-        STATE LAYOUT (Y array of 16 elements):
-            FF1: Y[0:4]   = [a1, not_a1, q1, not_q1]
-            FF2: Y[4:8]   = [a2, not_a2, q2, not_q2]
-            FF3: Y[8:12]  = [a3, not_a3, q3, not_q3]
-            FF4: Y[12:16] = [a4, not_a4, q4, not_q4]
+        STATE LAYOUT (Y array of 28 elements):
+            FF1: Y[0:4]   = [a1, not_a1, q1, not_q1]                     (Bit 0)
+            FF2: Y[4:8]   = [a2, not_a2, q2, not_q2]                     (Bit 1 - q1)
+            FF3: Y[8:12]  = [a3, not_a3, q3, not_q3]                     (Bit 2)
+            FF4: Y[12:16] = [a4, not_a4, q4, not_q4]                     (Bit 3 - q3)
+            FF5: Y[16:20] = [ap, not_ap, qp, not_qp]                     (Parity bit)
+            FF6: Y[20:24] = [a1_expected, not_a1_expected, q1_expected, not_q1_expected] (Bit 1 expected - visualization)
+            FF7: Y[24:28] = [a3_expected, not_a3_expected, q3_expected, not_q3_expected] (Bit 3 expected - visualization)
         
         CONTROL FLOW:
             1. Get clock signal (synchronized to time T)
@@ -324,34 +350,44 @@ class PIPORegister:
             4. For each flip-flop:
                - If write enabled: set D input = parallel input data
                - If write disabled: set D input = Q output (hold mode)
-            5. Solve ODE for each flip-flop independently
-            6. Concatenate all derivatives and return
+            5. Apply error injection to bit 1 (q1) if enabled (t=0-100)
+            6. Apply error injection to bit 3 (q3) if enabled (t=25-125)
+            7. Force bit 3 (q3) recovery after error (t=125-300)
+            8. Calculate parity from expected values (q1_expected, q3_expected)
+            9. Solve ODE for each flip-flop independently
+            10. Concatenate all derivatives and return
         
         Args:
-            Y: state vector [16 elements for 4 FF]
+            Y: state vector [28 elements for 7 FF]
             T: current time
             params: [alpha1, alpha2, alpha3, alpha4, delta1, delta2, Kd, n]
         
         Returns:
             dY: derivative of state vector (fed to ODE solver)
         """
-        # Unpack state variables for 4 flip-flops
-        a1, not_a1, q1, not_q1 = Y[0:4]
-        a2, not_a2, q2, not_q2 = Y[4:8]
-        a3, not_a3, q3, not_q3 = Y[8:12]
-        a4, not_a4, q4, not_q4 = Y[12:16]
+        # Unpack state variables for 4 data flip-flops
+        a1, not_a1, q1, not_q1 = Y[0:4]   # Bit 0
+        a2, not_a2, q2, not_q2 = Y[4:8]   # Bit 1 (q1) - with error injection
+        a3, not_a3, q3, not_q3 = Y[8:12]  # Bit 2
+        a4, not_a4, q4, not_q4 = Y[12:16] # Bit 3 (q3) - with error injection
+        
         # Parity flip-flop state (5th FF): stores even parity of 4 bits
         # Positions 16:20 → [ap, not_ap, qp, not_qp]
         ap, not_ap, qp, not_qp = Y[16:20]
-        # Correct bit 3 flip-flop (6th FF): stores correct bit 3 without error
-        # Positions 20:24 → [a3c, not_a3c, q3c, not_q3c]
-        a3c, not_a3c, q3c, not_q3c = Y[20:24]
+        
+        # ===== EXPECTED VALUES (6th & 7th FF) - VISUALIZATION ONLY =====
+        # These flip-flops track what bits should be without error injection
+        # Used for parity calculation and visualization comparison
+        # Bit 1 expected value (6th FF) - Positions 20:24
+        a1_expected, not_a1_expected, q1_expected, not_q1_expected = Y[20:24]
+        # Bit 3 expected value (7th FF) - Positions 24:28
+        a3_expected, not_a3_expected, q3_expected, not_q3_expected = Y[24:28]
         
         # Get clock signal
         clk = self._check_clock_edge(T)
         
         # Get write enable signals
-        write_all, write_bits = self._get_write_signals(T)
+        write_all, write_bits, write_parity = self._get_write_signals(T)
         
         # Get parallel input data
         parallel_input = self._get_parallel_input(T)
@@ -366,41 +402,66 @@ class PIPORegister:
             else:
                 d_inputs.append(q_outputs[i])
         
-        # Apply error injection: force bit 3 HIGH during WRITE_3ERR (t=50-100)
-        if ERR_BIT3_50_150 and write_bits[3]:
+        # ===== ERROR INJECTION - ACTUAL BIT VALUES =====
+        # Apply error injection: force bit 1 (q1) HIGH during t=0-85
+        if FLIP_BIT1_0_85 and 0 <= T < 85:
+            d_inputs[1] = 100  # Force HIGH (incorrect value)
+        # Force bit 1 (q1) back to expected value after error injection ends
+        elif FLIP_BIT1_0_85 and 85 <= T < 150 and not write_all and not write_bits[1]:
+            d_inputs[1] = 0  # Force back to LOW (expected value)
+        
+        # Apply error injection: force bit 3 (q3) HIGH during WRITE_3ERR (t=25-125)
+        if FLIP_BIT3_25_125 and write_bits[3]:
             d_inputs[3] = 100
-        # Force bit 3 back to correct value after error injection ends
-        elif ERR_BIT3_50_150 and 100 <= T < 300 and not write_all and not write_bits[3]:
-            d_inputs[3] = 0  # Force back to LOW (correct value)
+        # Force bit 3 (q3) back to expected value after error injection ends
+        elif FLIP_BIT3_25_125 and 125 <= T < 300 and not write_all and not write_bits[3]:
+            d_inputs[3] = 0  # Force back to LOW (expected value)
         
-        # Correct bit 3 (6th FF): same as bit 3 but without WRITE_3ERR signal
-        # Only responds to WRITE_ALL, ignores WRITE_3ERR
-        if write_all:
-            d_input_correct_bit3 = parallel_input[3]
+        # ===== EXPECTED VALUES (6th & 7th FF) - VISUALIZATION REFERENCES =====
+        # These flip-flops follow the same logic as their corresponding bits
+        # but WITHOUT error injection signals - used for visualization comparison
+        
+        # Bit 1 expected value (6th FF) - ignores error injection, follows WRITE_ALL and WRITE_1
+        if write_all or write_bits[1]:
+            d_input_bit1_expected = parallel_input[1]
         else:
-            d_input_correct_bit3 = q3c
+            d_input_bit1_expected = q1_expected
         
-        # Calculate parity from correct bit 3 (without error)
+        # Bit 3 expected value (7th FF) - ignores WRITE_3ERR signal
+        if write_all:
+            d_input_bit3_expected = parallel_input[3]
+        else:
+            d_input_bit3_expected = q3_expected
+        
+        # Calculate parity from expected values (without errors)
         bit0 = 1 if d_inputs[0] >= 50 else 0
-        bit1 = 1 if d_inputs[1] >= 50 else 0
+        bit1_expected = 1 if d_input_bit1_expected >= 50 else 0
         bit2 = 1 if d_inputs[2] >= 50 else 0
-        bit3_correct = 1 if d_input_correct_bit3 >= 50 else 0
+        bit3_expected = 1 if d_input_bit3_expected >= 50 else 0
         
-        calc_parity_bit = bit0 ^ bit1 ^ bit2 ^ bit3_correct
+        calc_parity_bit = bit0 ^ bit1_expected ^ bit2 ^ bit3_expected
         d_parity = 100 if calc_parity_bit == 1 else 0
+        
+        # Apply parity error injection: force stored parity during error windows
+        if FLIP_STORED_PARITY_VAL and write_parity:
+            if 400 <= T < 450:
+                d_parity = 0  # Force parity to 0 (incorrect value)
+            elif 450 <= T < 500:
+                d_parity = 100  # Force parity back to 1 (recovery)
 
-        # Parity write enable: whenever any bit is written or WRITE_ALL is active
-        parity_write_enable = write_all or any(write_bits)
+        # Parity write enable: whenever any bit is written or WRITE_ALL is active or write_parity
+        parity_write_enable = write_all or any(write_bits) or write_parity
         d_parity_eff = d_parity if parity_write_enable else qp  # hold when not writing parity
 
         # ===== BUILD STATE VECTORS FOR ODE SOLVING =====
         # Each flip-flop is independent, so we can solve them separately
-        Y_FF1 = [a1, not_a1, q1, not_q1, d_inputs[0], clk]
-        Y_FF2 = [a2, not_a2, q2, not_q2, d_inputs[1], clk]
-        Y_FF3 = [a3, not_a3, q3, not_q3, d_inputs[2], clk]
-        Y_FF4 = [a4, not_a4, q4, not_q4, d_inputs[3], clk]
-        Y_FFP = [ap, not_ap, qp, not_qp, d_parity_eff, clk]
-        Y_FF3C = [a3c, not_a3c, q3c, not_q3c, d_input_correct_bit3, clk]
+        Y_FF1 = [a1, not_a1, q1, not_q1, d_inputs[0], clk]  # Bit 0
+        Y_FF2 = [a2, not_a2, q2, not_q2, d_inputs[1], clk]  # Bit 1 (q1) - with error
+        Y_FF3 = [a3, not_a3, q3, not_q3, d_inputs[2], clk]  # Bit 2
+        Y_FF4 = [a4, not_a4, q4, not_q4, d_inputs[3], clk]  # Bit 3 (q3) - with error
+        Y_FFP = [ap, not_ap, qp, not_qp, d_parity_eff, clk] # Parity
+        Y_FF1_EXPECTED = [a1_expected, not_a1_expected, q1_expected, not_q1_expected, d_input_bit1_expected, clk]
+        Y_FF3_EXPECTED = [a3_expected, not_a3_expected, q3_expected, not_q3_expected, d_input_bit3_expected, clk]
         
         # ===== CALCULATE DERIVATIVES FOR EACH FLIP-FLOP =====
         # Each call to ff_ode_model computes the rate of change
@@ -410,10 +471,11 @@ class PIPORegister:
         dY3 = ff_ode_model(Y_FF3, T, params)
         dY4 = ff_ode_model(Y_FF4, T, params)
         dYP = ff_ode_model(Y_FFP, T, params)
-        dY3C = ff_ode_model(Y_FF3C, T, params)
+        dY1_EXPECTED = ff_ode_model(Y_FF1_EXPECTED, T, params)
+        dY3_EXPECTED = ff_ode_model(Y_FF3_EXPECTED, T, params)
         
         # Concatenate all derivatives and return
-        dY = np.concatenate([dY1, dY2, dY3, dY4, dYP, dY3C])
+        dY = np.concatenate([dY1, dY2, dY3, dY4, dYP, dY1_EXPECTED, dY3_EXPECTED])
         
         return dY
 
@@ -458,16 +520,22 @@ if __name__ == "__main__":
         
         Time Windows:
             - t=0-100:     WRITE_ALL active (all 4 bits written simultaneously)
-            - t=50-150:    WRITE_3ERR active (only bit 3 written - ERROR INJECTION)
-            - t=150-250:   WRITE_1 active (only bit 1 written)
+            - t=25-125:    WRITE_3ERR active (only bit 3 written - ERROR INJECTION)
+            - t=200-300:   WRITE_1 active (only bit 1 written)
             - t=200-250:   WRITE_0 active (only bit 0 written)
             - t=300-400:   WRITE_ALL active again
+        
+        Bit 3 Values:
+            - t=0-300:     LOW (0) - correct value
+            - t=25-125:    HIGH (100) - error injection (only if FLIP_BIT3_25_125=True)
+            - t=125-300:   Forced back to LOW (0) - recovery
+            - t=300-400:   HIGH (100) - correct value
         """
-        if t < 50:
+        if t < 25:
             return [100, 0, 100, 0]
-        elif 50 <= t < 100:
+        elif 25 <= t < 125:
             return [100, 0, 100, 0]  # Bit 3 should be LOW
-        elif 100 <= t < 150:
+        elif 125 <= t < 150:
             return [0, 0, 0, 0]
         elif 150 <= t < 200:
             return [0, 100, 0, 0]
@@ -492,8 +560,8 @@ if __name__ == "__main__":
     # 
     # We start with all outputs LOW (Q=0 for all bits)
     # Include parity flip-flop initial state as LOW as well
-    # Include correct bit 3 flip-flop (6th FF) for tracking non-errored bit 3
-    Y0 = np.array([0, 50, 0, 50] * 6)  # 6 FFs (4 data + 1 parity + 1 correct_bit3)
+    # Include expected value flip-flops (q1_expected, q3_expected) for visualization
+    Y0 = np.array([0, 50, 0, 50] * 7)  # 7 FFs (4 data + 1 parity + 2 expected values)
     
     # ========== TIME CONFIGURATION ==========
     # Define the simulation time range and resolution
@@ -509,16 +577,18 @@ if __name__ == "__main__":
     print("Solution complete.")
     
     # ========== EXTRACT OUTPUTS ==========
-    # The solution array has shape (len(T), 24) → 6 FFs × 4 states
+    # The solution array has shape (len(T), 28) → 7 FFs × 4 states
     # Extract the Q and not_Q values for each of the 4 data bits
     Q = np.column_stack([solution[:, 4*i + 2] for i in range(4)])
     not_Q = np.column_stack([solution[:, 4*i + 3] for i in range(4)])
     # Parity stored outputs (5th FF at indices 16..19)
     Qp = solution[:, 16 + 2]
     not_Qp = solution[:, 16 + 3]
-    # Correct bit 3 outputs (6th FF at indices 20..23)
-    Q3c = solution[:, 20 + 2]
-    not_Q3c = solution[:, 20 + 3]
+    # Expected value outputs (6th & 7th FF) - for visualization
+    Q1_expected = solution[:, 20 + 2]  # Bit 1 expected (6th FF at indices 20..23)
+    not_Q1_expected = solution[:, 20 + 3]
+    Q3_expected = solution[:, 24 + 2]  # Bit 3 expected (7th FF at indices 24..27)
+    not_Q3_expected = solution[:, 24 + 3]
     
     # Digital output: Convert analog protein levels to logic levels
     # Digital bit = 1 if Q > not_Q, else 0
@@ -536,7 +606,7 @@ if __name__ == "__main__":
     write_bit_signals = np.zeros((len(T), 4))
     
     for idx, t in enumerate(T):
-        write_all, write_bits = register._get_write_signals(t)
+        write_all, write_bits, write_parity = register._get_write_signals(t)
         write_all_signal[idx] = 50 if write_all else 0
         for i in range(4):
             write_bit_signals[idx, i] = 50 if write_bits[i] else 0
@@ -557,10 +627,10 @@ if __name__ == "__main__":
     
     # ===== SUBPLOT 0 (row 0, left): CONTROL SIGNALS =====
     ax_flat[0].plot(T, clk_signal, 'gray', alpha=0.3, label='CLK')
-    ax_flat[0].plot(T, write_all_signal, 'r', linewidth=2, label='WRITE_ALL')
+    ax_flat[0].plot(T, write_all_signal, 'r', linewidth=2.5, linestyle='--', label='WRITE_ALL')
     for i in range(4):
         if i != 3 and np.any(write_bit_signals[:, i] > 0):
-            ax_flat[0].plot(T, write_bit_signals[:, i], linewidth=2, label=f'WRITE_{i}')
+            ax_flat[0].plot(T, write_bit_signals[:, i], linewidth=2.5, linestyle=':', label=f'WRITE_{i}')
     ax_flat[0].set_ylabel('Control', fontsize=12)
     ax_flat[0].legend(loc='upper right', fontsize=9)
     ax_flat[0].grid(True, alpha=0.3)
@@ -594,12 +664,27 @@ if __name__ == "__main__":
     
     # ===== SUBPLOT 3 (row 1, right): BIT 1 ANALOG OUTPUT =====
     i = 1
-    ax_flat[3].plot(T, Q[:, i], colors[i], linewidth=2, label=f'Q{i}')
-    if np.any(write_bit_signals[:, i] > 0):
+    if FLIP_BIT1_0_85:
+        # Plot actual bit 1 (Q1) as red dotted line - shows value changes
+        ax_flat[3].plot(T, Q[:, i], colors[i], linewidth=2, label='Q1 (actual value)')
+        # Plot bit 1 expected value (Q1_expected) - what it should be
+        ax_flat[3].plot(T, Q1_expected, 'r', linewidth=2.5, linestyle=':', label='Q1 (expected value)')
+    else:
+        # Plot normal operation throughout (no error injection)
+        ax_flat[3].plot(T, Q[:, i], colors[i], linewidth=2, label=f'Q{i}')
+    # Show value change region from t=0 to t=100 (error period)
+    if FLIP_BIT1_0_85:
+        err_region = (T >= 0) & (T < 100)
         ax_flat[3].fill_between(T, 0, 400, 
+                               where=err_region,
+                               alpha=0.15, color='red', 
+                               label='Value Change')
+    # Highlight WRITE_1 region using the control signal (aligned to 200-300)
+    if np.any(write_bit_signals[:, i] > 0):
+        ax_flat[3].fill_between(T, 0, 400,
                                where=write_bit_signals[:, i] > 0,
-                               alpha=0.15, color='gray', 
-                               label=f'WRITE_{i}')
+                               alpha=0.12, color='gray',
+                               label='WRITE_1')
     ax_flat[3].axhline(y=50, color='gray', linestyle='--', alpha=0.5, linewidth=1)
     ax_flat[3].set_ylabel(f'Bit {i}', fontsize=12)
     ax_flat[3].legend(loc='upper right', fontsize=9)
@@ -643,21 +728,21 @@ if __name__ == "__main__":
     
     # ===== SUBPLOT 7 (row 3, right): BIT 3 ANALOG OUTPUT =====
     i = 3
-    if ERR_BIT3_50_150:
-        # Plot correct bit 3 (without error) in purple
-        ax_flat[7].plot(T, Q3c, colors[i], linewidth=2, label='Q3 (correct)')
-        # Plot errored bit 3 as red dotted line
-        ax_flat[7].plot(T, Q[:, i], 'r', linewidth=2.5, linestyle=':', label='Q3 (errored)')
+    if FLIP_BIT3_25_125:
+        # Plot actual bit 3 (q3) as red dotted line - shows value changes
+        ax_flat[7].plot(T, Q[:, i], colors[i], linewidth=2, label='Q3 (actual value)')
+        # Plot bit 3 expected value (q3_expected) - what it should be
+        ax_flat[7].plot(T, Q3_expected, 'r', linewidth=2.5, linestyle=':', label='Q3 (expected value)')
     else:
         # Plot normal operation throughout (no error injection)
         ax_flat[7].plot(T, Q[:, i], colors[i], linewidth=2, label=f'Q{i}')
-    # Show ERR region from t=50 to t=150 (error + recovery period)
-    if ERR_BIT3_50_150:
-        err_region = (T >= 50) & (T < 150)
+    # Show value change region from t=25 to t=150 (error + early recovery period)
+    if FLIP_BIT3_25_125:
+        err_region = (T >= 25) & (T < 150)
         ax_flat[7].fill_between(T, 0, 400, 
                                where=err_region,
                                alpha=0.15, color='red', 
-                               label='ERR')
+                               label='Value Change')
     ax_flat[7].axhline(y=50, color='gray', linestyle='--', alpha=0.5, linewidth=1)
     ax_flat[7].set_ylabel(f'Bit {i}', fontsize=12)
     ax_flat[7].legend(loc='upper right', fontsize=9)
