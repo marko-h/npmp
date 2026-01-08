@@ -658,7 +658,7 @@ if __name__ == "__main__":
     ax_flat[2].fill_between(T, 0, 1, where=parity_error > 0.5, alpha=0.25, color='red', label='Error')
     ax_flat[2].set_ylabel('Parity', fontsize=12)
     ax_flat[2].set_ylim(-0.1, 1.1)
-    ax_flat[2].legend(loc='upper right', fontsize=9)
+    ax_flat[2].legend(loc='lower right', fontsize=9)
     ax_flat[2].grid(True, alpha=0.3)
     ax_flat[2].set_title('Even Parity Check', fontsize=11, fontweight='bold')
     
@@ -687,7 +687,7 @@ if __name__ == "__main__":
                                label='WRITE_1')
     ax_flat[3].axhline(y=50, color='gray', linestyle='--', alpha=0.5, linewidth=1)
     ax_flat[3].set_ylabel(f'Bit {i}', fontsize=12)
-    ax_flat[3].legend(loc='upper right', fontsize=9)
+    ax_flat[3].legend(loc='lower right', fontsize=9)
     ax_flat[3].grid(True, alpha=0.3)
     ax_flat[3].set_ylim(-5, 400)
     
@@ -706,7 +706,7 @@ if __name__ == "__main__":
     ax_flat[4].set_ylim(-0.5, 6.0)
     ax_flat[4].set_yticks([0, 1.5, 3.0, 4.5])
     ax_flat[4].set_yticklabels(['Bit0', 'Bit1', 'Bit2', 'Bit3'])
-    ax_flat[4].legend(loc='upper right', fontsize=9)
+    ax_flat[4].legend(loc='lower right', fontsize=9)
     ax_flat[4].grid(True, alpha=0.3, axis='x')
     
     # ===== SUBPLOT 5 (row 2, right): BIT 2 ANALOG OUTPUT =====
@@ -745,7 +745,7 @@ if __name__ == "__main__":
                                label='Value Change')
     ax_flat[7].axhline(y=50, color='gray', linestyle='--', alpha=0.5, linewidth=1)
     ax_flat[7].set_ylabel(f'Bit {i}', fontsize=12)
-    ax_flat[7].legend(loc='upper right', fontsize=9)
+    ax_flat[7].legend(loc='lower right', fontsize=9)
     ax_flat[7].grid(True, alpha=0.3)
     ax_flat[7].set_ylim(-5, 400)
     ax_flat[7].set_xlabel('Time', fontsize=11)
