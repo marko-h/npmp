@@ -429,6 +429,10 @@ if __name__ == "__main__":
     ax_flat[3].set_ylim(-5, 400)
     
     # ===== SUBPLOT 4 (row 2, left): DIGITAL OUTPUT (bits) =====
+    # Convert expected values to digital
+    digital_q1_expected = (Q1_expected > not_Q1_expected).astype(int)
+    digital_q3_expected = (Q3_expected > not_Q3_expected).astype(int)
+    
     offset = 0.0
     for i in range(3, -1, -1):  # Reverse order: Bit3, Bit2, Bit1, Bit0 (bottom to top)
         ax_flat[4].plot(T, digital_out[:, i] + offset, colors[i], 
@@ -437,6 +441,15 @@ if __name__ == "__main__":
         ax_flat[4].fill_between(T, offset, 1 + offset, 
                         where=digital_out[:, i] > 0.5,
                         alpha=0.3, color=colors[i])
+        
+        # Add expected values for bits 1 and 3 (the bits with error injection)
+        if i == 1:
+            ax_flat[4].plot(T, digital_q1_expected + offset, 'r', 
+                        linewidth=2, linestyle=':', alpha=0.7, label=f'Bit{i} (expected)')
+        elif i == 3:
+            ax_flat[4].plot(T, digital_q3_expected + offset, 'r', 
+                        linewidth=2, linestyle=':', alpha=0.7, label=f'Bit{i} (expected)')
+        
         offset += 1.5
     ax_flat[4].set_ylabel('Digital Out', fontsize=12)
     ax_flat[4].set_ylim(-0.5, 6.0)
