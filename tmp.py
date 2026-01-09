@@ -3,8 +3,9 @@ import matplotlib.pyplot as plt
 from scipy.integrate import odeint
 
 # ==================== CONFIGURATION ====================
-FLIP_BIT1_0_85 = True  # Enable/disable error injection on bit 1 between t=0-85
-FLIP_BIT3_25_125 = True  # Enable/disable error injection on bit 3 between t=25-125
+FLIP_BIT1_0_85 = False  # Enable/disable error injection on bit 1 between t=0-85
+FLIP_BIT3_25_125 = False  # Enable/disable error injection on bit 3 between t=25-125
+FLIP_STORED_PARITY_VAL = False  # Enable/disable forcing stored parity to 0 between t=400-450
 # ==================== PROJECT OVERVIEW ====================
 # This module implements a 4-bit PIPO (Parallel In, Parallel Out) register
 # using biological D flip-flops. The key feature is PARITY CHECKING support
@@ -332,13 +333,13 @@ class PIPORegister:
         """
         # WRITE_ALL windows - simultaneous load of all 4 bits
         # These are 'test' or 'initialization' periods
-        write_all_windows = [(0, 100)]
+        write_all_windows = [(0, 100), (300, 400)]
         write_all = any(start <= T < end for start, end in write_all_windows)
         
         # WRITE_i windows - selective individual bit loading
         # Allows testing of specific bits in isolation
         write_bit_windows = {
-            1: [(150, 200)],  # Write bit 1 during this window
+            1: [(150, 250)],  # Write bit 1 during this window 
         }
 
         # Conditionally add WRITE_3 error injection window
@@ -394,7 +395,7 @@ class PIPORegister:
         This method defines the complete state evolution for all flip-flops and XOR gates.
         Called by the ODE solver at each time step.
         
-        STATE LAYOUT (Y array of 64 elements):
+        STATE LAYOUT (Y array of 46 elements):
             FF1: Y[0:4]   = [a1, not_a1, q1, not_q1]                     (Bit 0)
             FF2: Y[4:8]   = [a2, not_a2, q2, not_q2]                     (Bit 1)
             FF3: Y[8:12]  = [a3, not_a3, q3, not_q3]                     (Bit 2)
@@ -402,12 +403,9 @@ class PIPORegister:
             FF5: Y[16:20] = [ap, not_ap, qp, not_qp]                     (Parity bit)
             FF6: Y[20:24] = [a1_expected, not_a1_expected, q1_expected, not_q1_expected] (Bit 1 expected - visualization only)
             FF7: Y[24:28] = [a3_expected, not_a3_expected, q3_expected, not_q3_expected] (Bit 3 expected - visualization only)
-            XOR1: Y[28:34] = [x1_s1a, not_x1_s1a, x2_s1a, not_x2_s1a, out_s1a, not_out_s1a] (Expected parity: bit0^bit1_expected)
-            XOR2: Y[34:40] = [x1_s1b, not_x1_s1b, x2_s1b, not_x2_s1b, out_s1b, not_out_s1b] (Expected parity: bit2^bit3_expected)
-            XOR3: Y[40:46] = [x1_s2, not_x1_s2, x2_s2, not_x2_s2, out_s2, not_out_s2] (Expected parity: out_s1a^out_s1b)
-            XOR4: Y[46:52] = [x1_s1a_act, not_x1_s1a_act, x2_s1a_act, not_x2_s1a_act, out_s1a_act, not_out_s1a_act] (Actual parity: bit0^bit1)
-            XOR5: Y[52:58] = [x1_s1b_act, not_x1_s1b_act, x2_s1b_act, not_x2_s1b_act, out_s1b_act, not_out_s1b_act] (Actual parity: bit2^bit3)
-            XOR6: Y[58:64] = [x1_s2_act, not_x1_s2_act, x2_s2_act, not_x2_s2_act, out_s2_act, not_out_s2_act] (Actual parity: out_s1a_act^out_s1b_act)
+            XOR1: Y[28:34] = [x1_s1a, not_x1_s1a, x2_s1a, not_x2_s1a, out_s1a, not_out_s1a] (XOR: bit0^bit2 = parity)
+            XOR2: Y[34:40] = [unused - dummy gate for state compatibility]
+            XOR3: Y[40:46] = [unused - dummy gate for state compatibility]
         
         BIOLOGICAL PARITY CALCULATION:
             Single XOR gate: XOR(bit0, bit2) → parity output
@@ -426,21 +424,13 @@ class PIPORegister:
         a1_expected, not_a1_expected, q1_expected, not_q1_expected = Y[20:24]
         a3_expected, not_a3_expected, q3_expected, not_q3_expected = Y[24:28]
         
-        # XOR gate states for biological parity cascade (EXPECTED values)
+        # XOR gate states for biological parity cascade
         # Stage 1a: XOR(bit0, bit1_expected)
         Y_XOR1 = Y[28:34]
         # Stage 1b: XOR(bit2, bit3_expected)
         Y_XOR2 = Y[34:40]
-        # Stage 2: XOR(out_s1a, out_s1b) → final expected parity
+        # Stage 2: XOR(out_s1a, out_s1b) → final parity
         Y_XOR3 = Y[40:46]
-        
-        # XOR gate states for biological parity cascade (ACTUAL values including errors)
-        # Stage 1a: XOR(bit0, bit1_actual)
-        Y_XOR4 = Y[46:52]
-        # Stage 1b: XOR(bit2, bit3_actual)
-        Y_XOR5 = Y[52:58]
-        # Stage 2: XOR(out_s1a_act, out_s1b_act) → final actual parity
-        Y_XOR6 = Y[58:64]
         
         # Get clock signal
         clk = self._check_clock_edge(T)
@@ -492,41 +482,32 @@ class PIPORegister:
         else:
             d_input_bit3_expected = q3_expected
         
-        # Calculate parity from ALL 4 BITS using biological XOR cascade
-        # Use EXPECTED values for bit1 and bit3 (ignore error injection)
-        # Stage 1a: XOR(bit0, bit1_expected) - use stored Q outputs
-        dY_XOR1 = xor_gate_ode_model(Y_XOR1, T, q1, q1_expected, params)
+        # Calculate parity from BIT 0 and BIT 2 ONLY using biological XOR cascade
+        # Single XOR gate: XOR(bit0_actual, bit2_actual)
+        dY_XOR1 = xor_gate_ode_model(Y_XOR1, T, d_inputs[0], d_inputs[2], params)
+        
+        # Extract output from XOR1 (final parity is at index 4 of XOR state)
         out_s1a = Y_XOR1[4]
         
-        # Stage 1b: XOR(bit2, bit3_expected) - use stored Q outputs
-        dY_XOR2 = xor_gate_ode_model(Y_XOR2, T, q3, q3_expected, params)
-        out_s1b = Y_XOR2[4]
+        # Keep XOR2 and XOR3 for state compatibility but don't use them
+        # Feed dummy LOW inputs to keep ODE system stable
+        dY_XOR2 = xor_gate_ode_model(Y_XOR2, T, 0, 0, params)
+        dY_XOR3 = xor_gate_ode_model(Y_XOR3, T, 0, 0, params)
         
-        # Stage 2: XOR(out_s1a, out_s1b) → final 4-bit expected parity
-        # Feed raw analog outputs (not digital) to maintain continuous evolution
-        dY_XOR3 = xor_gate_ode_model(Y_XOR3, T, out_s1a, out_s1b, params)
-        out_s2 = Y_XOR3[4]  # Final expected parity output
-        
-        # ACTUAL parity cascade (using actual bit values including errors)
-        # Stage 1a: XOR(bit0, bit1_actual) - use actual stored Q outputs
-        dY_XOR4 = xor_gate_ode_model(Y_XOR4, T, q1, q2, params)
-        out_s1a_act = Y_XOR4[4]
-        
-        # Stage 1b: XOR(bit2, bit3_actual) - use actual stored Q outputs
-        dY_XOR5 = xor_gate_ode_model(Y_XOR5, T, q3, q4, params)
-        out_s1b_act = Y_XOR5[4]
-        
-        # Stage 2: XOR(out_s1a_act, out_s1b_act) → final actual parity
-        dY_XOR6 = xor_gate_ode_model(Y_XOR6, T, out_s1a_act, out_s1b_act, params)
-        out_s2_act = Y_XOR6[4]  # Final actual parity output
-        
-        # Normalize final expected parity output to 0-100 range
-        # Threshold at 50: below = LOW (0), above = HIGH (100)
-        d_parity = 100 if out_s2 > 50 else 0
+        # Use biological XOR cascade output as parity
+        # This provides realistic propagation delay (~9-15 time units)
+        d_parity = out_s1a
         
         # Parity FF ALWAYS receives the biological XOR cascade output
         # This ensures parity continuously tracks the 4 data bits
         d_parity_eff = d_parity
+        
+        # Apply parity error injection: force stored parity during error windows
+        if FLIP_STORED_PARITY_VAL:
+            if 400 <= T < 450:
+                d_parity_eff = 0  # Force parity to 0 (incorrect value)
+            elif 450 <= T < 500:
+                d_parity_eff = 100  # Force parity back to 100 (recovery)
 
         # ===== BUILD STATE VECTORS FOR ODE SOLVING =====
         # Each flip-flop is independent, so we can solve them separately
@@ -549,9 +530,8 @@ class PIPORegister:
         dY1_EXPECTED = ff_ode_model(Y_FF1_EXPECTED, T, params)
         dY3_EXPECTED = ff_ode_model(Y_FF3_EXPECTED, T, params)
         
-        # Concatenate all derivatives: 4 FF (16) + 1 parity FF (4) + 2 expected FF (8) + 6 XOR gates (36)
-        dY = np.concatenate([dY1, dY2, dY3, dY4, dYP, dY1_EXPECTED, dY3_EXPECTED, 
-                            dY_XOR1, dY_XOR2, dY_XOR3, dY_XOR4, dY_XOR5, dY_XOR6])
+        # Concatenate all derivatives: 4 FF (16) + 1 parity FF (4) + 2 expected FF (8) + 3 XOR gates (18)
+        dY = np.concatenate([dY1, dY2, dY3, dY4, dYP, dY1_EXPECTED, dY3_EXPECTED, dY_XOR1, dY_XOR2, dY_XOR3])
         
         return dY
 
@@ -570,7 +550,7 @@ if __name__ == "__main__":
     delta1 = 1.23   # Degradation rate - controls hold time and settling speed
     delta2 = 0.30   # Degradation rate - affects output stability
     Kd = 7.46       # Dissociation constant - protein-DNA binding threshold
-    n = 6.0         # Hill coefficient - sharpness of logic transitions (increased for much sharper NOT gates)
+    n = 4.0         # Hill coefficient - sharpness of logic transitions (cooperative binding)
     
     params = [alpha1, alpha2, alpha3, alpha4, delta1, delta2, Kd, n]
     
@@ -614,13 +594,11 @@ if __name__ == "__main__":
         elif 125 <= t < 150:
             return [0, 0, 0, 0]
         elif 150 <= t < 200:
-            return [0, 100, 100, 0]  # bit1=HIGH, bit2=HIGH
+            return [0, 100, 0, 0]
         elif 200 <= t < 250:
-            return [0, 0, 0, 0]      # bit2 goes LOW at t=200
-        elif 300 <= t < 350:
-            return [100, 100, 0, 0]  # Bit 3 LOW
-        elif 350 <= t < 500:
-            return [100, 100, 0, 0]  # Bit 3 stays LOW
+            return [0, 0, 0, 0]
+        elif 300 <= t < 400:
+            return [100, 100, 0, 100]  # Bit 3 now HIGH
         else:
             return [0, 0, 0, 0]
     
@@ -640,13 +618,13 @@ if __name__ == "__main__":
     # Include parity flip-flop initial state as LOW
     # Include expected value flip-flops (q1_expected, q3_expected)
     # Include XOR gate initial states (all outputs LOW)
-    Y0 = np.array([0, 50, 0, 50] * 7 + [0, 50, 0, 50, 0, 50] * 6)  # 7 FFs + 6 XOR gates
+    Y0 = np.array([0, 50, 0, 50] * 7 + [0, 50, 0, 50, 0, 50] * 3)  # 7 FFs + 3 XOR gates
     
     # ========== TIME CONFIGURATION ==========
     # Define the simulation time range and resolution
     t_start = 0      # Start at t=0
-    t_end = 300      # Run for 300 time units
-    T = np.linspace(t_start, t_end, 3000)  # 3000 time points for smooth curves
+    t_end = 500      # Run for 500 time units
+    T = np.linspace(t_start, t_end, 5000)  # 5000 time points for smooth curves
     
     # ========== SOLVE ODEs ==========
     # Integrate the system of ODEs using numerical methods (odeint = LSODA)
@@ -656,7 +634,7 @@ if __name__ == "__main__":
     print("Solution complete.")
     
     # ========== EXTRACT OUTPUTS ==========
-    # The solution array has shape (len(T), 64) → 7 FFs + 6 XOR gates
+    # The solution array has shape (len(T), 46) → 7 FFs + 3 XOR gates
     # Extract the Q and not_Q values for each of the 4 data bits
     Q = np.column_stack([solution[:, 4*i + 2] for i in range(4)])
     not_Q = np.column_stack([solution[:, 4*i + 3] for i in range(4)])
@@ -668,14 +646,10 @@ if __name__ == "__main__":
     not_Q1_expected = solution[:, 20 + 3]
     Q3_expected = solution[:, 24 + 2]
     not_Q3_expected = solution[:, 24 + 3]
-    # XOR cascade outputs - EXPECTED parity (using bit_expected values)
-    out_XOR1 = solution[:, 28 + 4]  # XOR: bit0 ^ bit1_expected
-    out_XOR2 = solution[:, 34 + 4]  # XOR: bit2 ^ bit3_expected
-    out_XOR3 = solution[:, 40 + 4]  # XOR: final expected parity
-    # XOR cascade outputs - ACTUAL parity (using actual bit values including errors)
-    out_XOR4 = solution[:, 46 + 4]  # XOR: bit0 ^ bit1_actual
-    out_XOR5 = solution[:, 52 + 4]  # XOR: bit2 ^ bit3_actual
-    out_XOR6 = solution[:, 58 + 4]  # XOR: final actual parity
+    # XOR cascade outputs
+    out_XOR1 = solution[:, 28 + 4]  # XOR output: bit0 ^ bit2 (parity)
+    out_XOR2 = solution[:, 34 + 4]  # Unused (dummy gate)
+    out_XOR3 = solution[:, 40 + 4]  # Unused (dummy gate)
     
     # Digital output: Convert analog protein levels to logic levels
     # Digital bit = 1 if Q > not_Q, else 0
@@ -739,18 +713,15 @@ if __name__ == "__main__":
     ax_flat[1].grid(True, alpha=0.3)
     ax_flat[1].set_ylim(-5, 400)
     
-    # ===== SUBPLOT 2 (row 1, left): PARITY (expected vs actual) =====
-    # Highlight regions where expected and actual parity differ (error detection)
-    parity_diff = np.abs(out_XOR3 - out_XOR6) > 30  # Threshold for difference
-    ax_flat[2].fill_between(T, 0, 400, where=parity_diff, alpha=0.2, color='red', label='Parity Mismatch')
-    
-    ax_flat[2].plot(T, out_XOR3, 'blue', linewidth=2.5, label='Expected Parity (from bit_expected)')
-    ax_flat[2].plot(T, out_XOR6, 'red', linewidth=2.5, linestyle='--', label='Actual Parity (from actual bits)')
-    ax_flat[2].axhline(y=300, color='gray', linestyle='--', alpha=0.5, linewidth=1, label='Threshold (300)')
-    ax_flat[2].set_ylabel('Parity Value', fontsize=12)
-    ax_flat[2].set_ylim(-5, 400)
-    ax_flat[2].legend(loc='lower right', fontsize=8)
+    # ===== SUBPLOT 2 (row 1, left): PARITY (stored vs calculated) =====
+    ax_flat[2].plot(T, stored_parity, 'g', linewidth=2.5, linestyle='--', label='Stored Parity')
+    ax_flat[2].plot(T, calculated_parity, 'orange', linewidth=2.5, linestyle=':', label='Calculated Parity')
+    ax_flat[2].fill_between(T, 0, 1, where=parity_error > 0.5, alpha=0.25, color='red', label='Error')
+    ax_flat[2].set_ylabel('Parity', fontsize=12)
+    ax_flat[2].set_ylim(-0.1, 1.1)
+    ax_flat[2].legend(loc='lower right', fontsize=9)
     ax_flat[2].grid(True, alpha=0.3)
+    ax_flat[2].set_title('Even Parity Check', fontsize=11, fontweight='bold')
     
     # ===== SUBPLOT 3 (row 1, right): BIT 1 ANALOG OUTPUT =====
     i = 1
@@ -783,7 +754,7 @@ if __name__ == "__main__":
     
     # ===== SUBPLOT 4 (row 2, left): DIGITAL OUTPUT (bits) =====
     offset = 0.0
-    for i in range(3, -1, -1):  # Reverse order: Bit3, Bit2, Bit1, Bit0 (bottom to top)
+    for i in range(4):
         ax_flat[4].plot(T, digital_out[:, i] + offset, colors[i], 
                     linewidth=2, label=f'Bit{i}')
         # Fill under the curve to visualize HIGH state more clearly
@@ -792,9 +763,10 @@ if __name__ == "__main__":
                         alpha=0.3, color=colors[i])
         offset += 1.5
     ax_flat[4].set_ylabel('Digital Out', fontsize=12)
+    ax_flat[4].set_xlabel('Time', fontsize=11)
     ax_flat[4].set_ylim(-0.5, 6.0)
     ax_flat[4].set_yticks([0, 1.5, 3.0, 4.5])
-    ax_flat[4].set_yticklabels(['Bit3', 'Bit2', 'Bit1', 'Bit0'])
+    ax_flat[4].set_yticklabels(['Bit0', 'Bit1', 'Bit2', 'Bit3'])
     ax_flat[4].legend(loc='lower right', fontsize=9)
     ax_flat[4].grid(True, alpha=0.3, axis='x')
     
@@ -814,8 +786,8 @@ if __name__ == "__main__":
     
     # ===== SUBPLOT 6 (row 3, left): BIOLOGICAL XOR OUTPUT & DISCRETE SAMPLING =====
     # Show the continuous biological XOR gate output (bit0 XOR bit2)
-    ax_flat[6].plot(T, out_XOR1, 'purple', linewidth=2, alpha=0.7, label='XOR1 Output (bit0^bit1) - Analog')
-    ax_flat[6].axhline(y=300, color='gray', linestyle='--', alpha=0.5, linewidth=1, label='Threshold (300)')
+    ax_flat[6].plot(T, out_XOR1, 'purple', linewidth=2, alpha=0.7, label='XOR1 Output (bit0^bit2) - Analog')
+    ax_flat[6].axhline(y=50, color='gray', linestyle='--', alpha=0.5, linewidth=1, label='Threshold')
     
     # Find clock rising edges (when parity is sampled)
     # Use robust edge detection: find where clock crosses threshold from below to above
@@ -826,19 +798,37 @@ if __name__ == "__main__":
         if clk_centered[idx-1] < 0 and clk_centered[idx] >= 0:
             clk_rising_edges.append(idx)
     
-    # Sample parity at clock edges (this is when FF captures the value)
-    sampled_times = T[clk_rising_edges]
-    sampled_xor_values = out_XOR1[clk_rising_edges]  # Use XOR1 output for stage 1
-    sampled_parity_digital = (sampled_xor_values > 50).astype(int)
+    print(f"DEBUG: Found {len(clk_rising_edges)} clock rising edges")
+    print(f"DEBUG: Clock signal range: {clk_signal.min():.2f} to {clk_signal.max():.2f}")
+    print(f"DEBUG: First 5 edge times: {T[clk_rising_edges[:5]].tolist() if len(clk_rising_edges) > 0 else 'None'}")
     
-    # Plot sampled points as dots
-    ax_flat[6].scatter(sampled_times, sampled_xor_values, c='red', s=80, zorder=5, 
-                       marker='o', label='Sampled at Clock Edge')
+    # Sample parity at clock edges (this is when FF captures the value)
+    if len(clk_rising_edges) > 0:
+        sampled_times = T[clk_rising_edges]
+        sampled_xor_values = out_XOR1[clk_rising_edges]
+        sampled_parity_digital = (sampled_xor_values > 50).astype(int)
+        
+        # Plot sampled points as dots
+        ax_flat[6].scatter(sampled_times, sampled_xor_values, c='red', s=80, zorder=5, 
+                           marker='o', label='Sampled at Clock Edge')
+        print(f"DEBUG: Sampled XOR values at edges: {sampled_xor_values[:5]}")
+    else:
+        print("WARNING: No clock edges detected!")
+    
+    # Plot digital parity values (0 or 1) as horizontal lines at sampling times
+    if len(clk_rising_edges) > 0:
+        for i, (t, p) in enumerate(zip(sampled_times, sampled_parity_digital)):
+            if i == 0:
+                ax_flat[6].plot([t, t], [0, p*100], 'orange', linewidth=3, alpha=0.6, label='Digital Parity Value')
+            else:
+                ax_flat[6].plot([t, t], [0, p*100], 'orange', linewidth=3, alpha=0.6)
     
     ax_flat[6].set_ylabel('XOR Gate Output', fontsize=12)
-    ax_flat[6].legend(loc='lower right', fontsize=9)
+    ax_flat[6].set_xlabel('Time', fontsize=11)
+    ax_flat[6].legend(loc='upper right', fontsize=9)
     ax_flat[6].grid(True, alpha=0.3)
-    ax_flat[6].set_ylim(-5, 400)
+    ax_flat[6].set_ylim(-5, 105)
+    ax_flat[6].set_title('Biological XOR Parity Calculation (bit0^bit2)', fontsize=11, fontweight='bold')
     
     # ===== SUBPLOT 7 (row 3, right): BIT 3 ANALOG OUTPUT =====
     i = 3
@@ -859,8 +849,9 @@ if __name__ == "__main__":
                                label='Value Change')
     ax_flat[7].axhline(y=50, color='gray', linestyle='--', alpha=0.5, linewidth=1)
     ax_flat[7].set_ylabel(f'Bit {i}', fontsize=12)
-    ax_flat[7].legend(loc='upper right', fontsize=9)
+    ax_flat[7].legend(loc='lower right', fontsize=9)
     ax_flat[7].grid(True, alpha=0.3)
     ax_flat[7].set_ylim(-5, 400)
+    ax_flat[7].set_xlabel('Time', fontsize=11)
     plt.tight_layout()
     plt.show()
